@@ -22,6 +22,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -44,6 +45,7 @@ var (
 	configDir     = flag.String("tsnet-dir", "", "tsnet server directory; if empty, tsnet uses an automatic config directory based on the binary name")
 	tls           = flag.Bool("tls", true, "serve over TLS using Tailscale Serve")
 	loginServer   = flag.String("login-server", "", "optional alternate URL of control server")
+	apiServer     = flag.String("api-server", "", "optional alternate URL of API server")
 )
 
 func main() {
@@ -52,12 +54,27 @@ func main() {
 		log.Fatalf("usage: hallpass [flags]")
 	}
 
+	// parse apiURL
+	var apiURL *url.URL
+	if *apiServer != "" {
+		var err error
+		apiURL, err = url.Parse(*apiServer)
+		if err != nil {
+			log.Fatalf("invalid --api-server %q: %v", *apiServer, err)
+		}
+	} else {
+		apiURL = nil
+	}
+
 	ts := &tsnet.Server{
 		Hostname:   "hallpass",
 		Dir:        *configDir,
 		ControlURL: *loginServer,
 	}
-	js := &Server{ts: ts}
+	js := &Server{
+		ts:     ts,
+		apiURL: apiURL,
+	}
 	if err := ts.Start(); err != nil {
 		log.Fatal(err)
 	}
@@ -191,6 +208,7 @@ type durationDropdown struct {
 type Server struct {
 	ts          *tsnet.Server
 	localClient *local.Client
+	apiURL      *url.URL
 	fqdn        string // e.g. "jit.foo.ts.net" without trailing dot
 
 	webhookURL        setec.Secret
@@ -445,9 +463,12 @@ func (s *Server) tsClient() *tailscale.Client {
 	conf := tailscale.OAuthConfig{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
-		BaseURL:      s.ts.ControlURL,
+		BaseURL:      s.apiURL.String(),
 	}
-	return &tailscale.Client{HTTP: conf.HTTPClient()}
+	return &tailscale.Client{
+		HTTP:    conf.HTTPClient(),
+		BaseURL: s.apiURL,
+	}
 }
 
 func (s *Server) serveAccessPost(w http.ResponseWriter, r *http.Request) {
